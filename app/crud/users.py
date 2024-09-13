@@ -5,6 +5,7 @@ from typing import Sequence
 from sqlalchemy import select
 from fastapi import HTTPException
 from uuid import UUID
+from sqlalchemy.exc import SQLAlchemyError
 
 async def create_user(db_session: AsyncSession, params: UserCreate) -> User:
     user = models.User(**params.model_dump())

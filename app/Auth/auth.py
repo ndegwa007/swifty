@@ -2,17 +2,38 @@ import os
 import app.models as models
 from passlib.context import CryptContext
 from jose import JWTError, jwt 
-from fastapi.security  import OAuth2PasswordBearer
+from fastapi.security  import OAuth2AuthorizationCodeBearer
+from authlib.integrations.starlette_client import OAuth
+from starlette.config import Config
+from starlette.requests import Request
 from datetime import datetime, timedelta, timezone
 from sqlalchemy.ext.asyncio import AsyncSession
 from fastapi import Depends, HTTPException, status
 from app.database.session import get_db_session
 from sqlalchemy import select
 from loguru import logger
-from dotenv import load_dotenv 
+from dotenv import load_dotenv
+from app.crud.users import create_user
 
 
 load_dotenv()
+
+# OIDC CONFIGURATION
+config = Config('.env')
+oauth = OAuth(config)
+
+CONF_URL = 'https://accounts.google.com/.well-known/openid-configuration'
+oauth.register(
+    name='google',
+    server_metadata_url=CONF_URL,
+    client_id = os.getenv('GOOGLE_CLIENT_ID'),
+    client_secret = os.getenv('GOOGLE_CLIENT_SECRET'),
+    client_kwargs={
+        'scope': 'openid email profile',
+        'token_endpoint_auth_method': 'client_secret_post'
+    }
+)
+
 
 
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
@@ -21,7 +42,13 @@ SECRET_KEY = os.getenv("JWT_SECRET_KEY")
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE = 30
 
-oauth2_scheme = OAuth2PasswordBearer(tokenUrl="token")
+# oauth2_scheme = OAuth2PasswordBearer(tokenUrl="token")
+
+oauth2_scheme = OAuth2AuthorizationCodeBearer(
+    authorizationUrl="https://accounts.google.com/o/oauth2/auth",
+    tokenUrl="https://oauth2.googleapis.com/token"
+)
+
 
 # helper functions
 def verify_password(plain_password, hashed_password):
@@ -51,6 +78,12 @@ async  def get_user_by_username(username: str, db: AsyncSession = Depends(get_db
     ).first()
     return user
 
+async def get_user_by_email(email: str, db: AsyncSession = Depends(get_db_session)):
+    user = (await db.scalars(select(models.User).where(models.User.email == email))).first()
+    return user
+
+
+
 async def authenticate_user(username: str, password: str, db: AsyncSession = Depends(get_db_session)):
     user = await get_user_by_username(username, db)
     
@@ -64,33 +97,58 @@ async def authenticate_user(username: str, password: str, db: AsyncSession = Dep
 
 
 
-async def get_current_user(token: str = Depends(oauth2_scheme), db: AsyncSession = Depends(get_db_session)):
-    logger.info(f"Received token: {token}")
-    credentials_exception = HTTPException(
-        status_code=status.HTTP_401_UNAUTHORIZED,
-        detail="Could not validate credentials",
-        headers={"WWW-Authenticate": "Bearer"}
-    )
+async def login(request: Request):
+    redirect_uri = request.url_for('auth')
+    logger.info(f"Redirecting to Google with callback URL: {redirect_uri}")
+    return await oauth.google.authorize_redirect(request, redirect_uri)
+
+async def auth(request: Request, db: AsyncSession = Depends(get_db_session)):
+    logger.info("Starting auth process")
+    try:
+        token = await oauth.google.authorize_access_token(request)
+        logger.info("Access token obtained from Google")
+        logger.info(f"Token response: {token}")
+        user_info = await oauth.google.parse_id_token(request, token.get('id_token'))
+        logger.info(f"ID token parsed. User info: {user_info}")
+    except Exception as e:
+        logger.error(f"Error during Google authentication: {str(e)}")
+        raise HTTPException(status_code=400, detail="Failed to authenticate with Google")
+
+    email = user_info.get('email')
+    name = user_info.get('name')
+
+    if not email:
+        logger.error("Email not provided by Google")
+        raise HTTPException(status_code=400, detail="Email not provided by Google")
+
+    user = await get_user_by_email(email, db)
+    if not user:
+        logger.info(f"Creating new user with email: {email}")
+        user = await create_user(db, user_info)
+    else:
+        logger.info(f"User found with email: {email}")
+
+    access_token = create_access_token({"sub": email, "name": name})
+    logger.info(f"Access token created for user: {email}")
+    return {"access_token": access_token, "token_type": "bearer", "user_info": user_info}
+
+
+                            
+async def get_current_user(token: str = Depends(oauth2_scheme)):
     try:
         payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
-        username: str = payload.get("sub")
-        expiration = payload.get("exp")
-        if username is None or expiration is None:
-            logger.warning("Invalid payload in token")
-            raise credentials_exception
-        if datetime.now(timezone.utc) > datetime.fromtimestamp(expiration):
-            logger.warning("Token has expired")
-            raise credentials_exception
+        email: str = payload.get("sub")
+        if email is None:
+            logger.error("Email not found in token")
+            raise HTTPException(status_code=401, detail="Invalid authentication credentials")
     except JWTError as e:
-        logger.error(f"JWT decode error str({e})", exc_info=True)
-        raise credentials_exception
+        logger.error(f"JWT decode error: {str(e)}")
+        raise HTTPException(status_code=401, detail="Invalid authentication credentials")
+    
+    logger.info(f"User authenticated: {email}")
+    return {"email": email, "name": payload.get("name")}
 
-    user = await get_user_by_username(username, db)
-    if user is None:
-        logger.warning(f"User not found: {username}")
-        raise credentials_exception
 
-    return user
 
 
 
