@@ -14,9 +14,7 @@ class UserUpdate(UserBase):
 
 class User(UserBase):
     userID: uuid.UUID
-    username: str
-    password: str
-    email: str
+
 
 
  

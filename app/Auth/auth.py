@@ -15,7 +15,6 @@ from loguru import logger
 from dotenv import load_dotenv
 from app.crud.users import create_user
 
-
 load_dotenv()
 
 # OIDC CONFIGURATION
@@ -30,7 +29,8 @@ oauth.register(
     client_secret = os.getenv('GOOGLE_CLIENT_SECRET'),
     client_kwargs={
         'scope': 'openid email profile',
-        'token_endpoint_auth_method': 'client_secret_post'
+        'token_endpoint_auth_method': 'client_secret_post',
+        'response_type': 'code id_token' 
     }
 )
 
@@ -70,6 +70,21 @@ def create_access_token(data: dict, expires_delta: timedelta | None = None):
     encoded_jwt = jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
     return encoded_jwt
 
+"""
+def decode_id_token(id_token):
+    # Fetch Google public keys
+    keys_url = 'https://www.googleapis.com/oauth2/v3/certs'
+    keys = requests.get(keys_url).json()
+
+    # Decode and verify token
+    try:
+        user_info = jwt.decode(id_token, keys, algorithms=['RS256'], audience=os.getenv('GOOGLE_CLIENT_ID'))
+        return user_info
+    except JWTError as e:
+        logger.error(f"Failed to decode ID token: {e}")
+        raise HTTPException(status_code=400, detail="Failed to decode ID token")
+"""
+
 
 
 async  def get_user_by_username(username: str, db: AsyncSession = Depends(get_db_session)):
@@ -107,8 +122,11 @@ async def auth(request: Request, db: AsyncSession = Depends(get_db_session)):
     try:
         token = await oauth.google.authorize_access_token(request)
         logger.info("Access token obtained from Google")
-        logger.info(f"Token response: {token}")
-        user_info = await oauth.google.parse_id_token(request, token.get('id_token'))
+        # logger.info(f"Token response: {token}")
+        id_token = token.get('id_token')
+        logger.info(f"id_token found: {id_token}")
+        user_info = user_info = await oauth.google.parse_id_token(request, id_token)
+
         logger.info(f"ID token parsed. User info: {user_info}")
     except Exception as e:
         logger.error(f"Error during Google authentication: {str(e)}")
@@ -116,6 +134,7 @@ async def auth(request: Request, db: AsyncSession = Depends(get_db_session)):
 
     email = user_info.get('email')
     name = user_info.get('name')
+    params = {"email": email, "username": name}
 
     if not email:
         logger.error("Email not provided by Google")
@@ -124,7 +143,7 @@ async def auth(request: Request, db: AsyncSession = Depends(get_db_session)):
     user = await get_user_by_email(email, db)
     if not user:
         logger.info(f"Creating new user with email: {email}")
-        user = await create_user(db, user_info)
+        user = await create_user(db, params)
     else:
         logger.info(f"User found with email: {email}")
 

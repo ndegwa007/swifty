@@ -7,6 +7,7 @@ from fastapi import HTTPException
 from uuid import UUID
 from sqlalchemy.exc import SQLAlchemyError
 
+
 async def create_user(db_session: AsyncSession, params: UserCreate) -> User:
     user = models.User(**params.model_dump())
     db_session.add(user)
@@ -25,17 +26,19 @@ async def get_user(user_id: UUID, db_session: AsyncSession) -> User:
         await db_session.scalars(select(models.User).where(models.User.userID == str(user_id)))
     ).first()
     if not user:
-        raise HTTPException(status_code=404, message="user not found!")
+        raise HTTPException(status_code=404, detail="user not found!")
     return user
 
 
 async def update_user(user_id: UUID, params: UserUpdate, db_session: AsyncSession) -> User:
+    from app.Auth.auth import get_password_hash # hashing the updated password 
     user = await get_user(user_id, db_session)
 
     for attr, value in params.model_dump(exclude_unset=True).items():
+        
+        if attr == 'password':
+            value = get_password_hash(value)
         setattr(user, attr, value)
-
-    db_session.add(user)
     await db_session.commit()
     await db_session.refresh(user)
     return user
@@ -52,5 +55,4 @@ async def delete_user(user_id: UUID, db_session: AsyncSession):
     except SQLAlchemyError as e:
         await db_session.rollback()
         raise HTTPException(status_code=500, detail="An error occurred while deleting the user")
-    
-    return user
+
