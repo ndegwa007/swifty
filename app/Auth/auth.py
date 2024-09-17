@@ -13,7 +13,7 @@ from app.database.session import get_db_session
 from sqlalchemy import select
 from loguru import logger
 from dotenv import load_dotenv
-from app.crud.users import create_user
+import app.models as models
 
 load_dotenv()
 
@@ -29,8 +29,6 @@ oauth.register(
     client_secret = os.getenv('GOOGLE_CLIENT_SECRET'),
     client_kwargs={
         'scope': 'openid email profile',
-        'token_endpoint_auth_method': 'client_secret_post',
-        'response_type': 'code id_token' 
     }
 )
 
@@ -114,19 +112,32 @@ async def authenticate_user(username: str, password: str, db: AsyncSession = Dep
 
 async def login(request: Request):
     redirect_uri = request.url_for('auth')
-    logger.info(f"Redirecting to Google with callback URL: {redirect_uri}")
-    return await oauth.google.authorize_redirect(request, redirect_uri)
+    state = os.getenv("SESSION_SECRET")
+    request.session['oauth_state'] = state
+    logger.info(f"Redirecting to Google with callback URL: {redirect_uri}")  
+    response = await oauth.google.authorize_redirect(request, redirect_uri, state=state)
+    logger.info(f"State sent: {request.session.get('oauth_state')}")
+    return response
+  
 
 async def auth(request: Request, db: AsyncSession = Depends(get_db_session)):
     logger.info("Starting auth process")
     try:
-        token = await oauth.google.authorize_access_token(request)
-        logger.info("Access token obtained from Google")
-        # logger.info(f"Token response: {token}")
-        id_token = token.get('id_token')
-        logger.info(f"id_token found: {id_token}")
-        user_info = user_info = await oauth.google.parse_id_token(request, id_token)
+        expected_state = request.session.pop('oauth_state', None)
+        logger.info(f"expected_state: {expected_state}")
 
+        received_state = request.query_params.get('state')
+        logger.info(f"Received state from Google: {received_state}")
+
+        token = await oauth.google.authorize_access_token(request)
+                
+        
+        logger.info("Access token obtained from Google")
+        logger.info(f"Token response: {token}")
+        #id_token = token.get('id_token')
+        # logger.info(f"id_token found: {id_token}")
+
+        user_info = token.get('userinfo')  
         logger.info(f"ID token parsed. User info: {user_info}")
     except Exception as e:
         logger.error(f"Error during Google authentication: {str(e)}")
@@ -143,7 +154,10 @@ async def auth(request: Request, db: AsyncSession = Depends(get_db_session)):
     user = await get_user_by_email(email, db)
     if not user:
         logger.info(f"Creating new user with email: {email}")
-        user = await create_user(db, params)
+        user = models.User(email=email, username=name)
+        db.add(user)
+        await db.commit()
+        await db.refresh(user)
     else:
         logger.info(f"User found with email: {email}")
 

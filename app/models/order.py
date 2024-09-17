@@ -1,6 +1,6 @@
 from . import Base
-from sqlalchemy.orm import mapped_column, Mapped
-from sqlalchemy import DateTime
+from sqlalchemy.orm import mapped_column, Mapped, relationship
+from sqlalchemy import DateTime, ForeignKey
 import uuid
 import datetime
 
@@ -12,3 +12,7 @@ class Order(Base):
     item_name: Mapped[str] = mapped_column(nullable=False, index=True)
     quantity: Mapped[int] = mapped_column(nullable=False, index=True)
     order_time: Mapped[datetime.datetime] = mapped_column(DateTime(timezone=True))
+    user_id = Mapped[str] = mapped_column(ForeignKey('users.userID'), nullable=False)
+
+    # relationship 
+    user = relationship('User', back_populates='orders')

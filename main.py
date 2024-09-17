@@ -5,6 +5,7 @@ from fastapi import FastAPI
 from app.database.tables import create_tables
 from starlette.middleware.sessions import SessionMiddleware
 import os
+import secrets
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
@@ -20,5 +21,6 @@ async def lifespan(_app: FastAPI):
 app = FastAPI(lifespan=lifespan)
 app.include_router(router)
 
-app.add_middleware(SessionMiddleware, secret_key=os.getenv('SESSION_SECRET'))
+session_secrets = secrets.token_urlsafe(16)
+app.add_middleware(SessionMiddleware, secret_key=session_secrets, max_age=3600, https_only=True)
 
